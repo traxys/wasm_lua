@@ -424,11 +424,6 @@ function Stack:empty()
    return #self._et == 0
 end
 
-local ActionKind = {}
-
-
-
-
 local InstructionErasedAction = {}
 
 local InstructionName = {}
@@ -729,10 +724,7 @@ function VmState:step()
    print(instr.name)
 
 
-   local action = instr.action(self)
-   if action ~= nil then
-      error("non nil action not supported")
-   end
+   instr.action(self)
    frame.current = frame.current + 1
 
    return true
@@ -776,7 +768,7 @@ local InstructionAction = {}
 
 local function castErased(vmaction)
    return function(erased)
-      return vmaction(erased)
+      vmaction(erased)
    end
 end
 
@@ -984,10 +976,6 @@ function Instruction:varInstr(bytes, opcode)
    else
       error("Invalid var instr: " .. opcode)
    end
-end
-
-local function actionInstr(action)
-   return castErased(function(_) return action end)
 end
 
 local function constInstr(value, type)
@@ -1389,11 +1377,9 @@ function Instruction.parse(bytes)
       local block = blockParse(bytes, opcode)
       self:blockInstr(block)
    elseif opcode == 0x0C then
-      local label = readU(bytes, 32)
+      local _label = readU(bytes, 32)
       self.name = "branch"
-      self.action = function(_)
-         return { tag = "branch", value = label }
-      end
+      self.action = unimpInstr("branch")
    elseif opcode == 0x0d then
       local _label = readU(bytes, 32)
       self.name = "branch_if"
@@ -1405,7 +1391,7 @@ function Instruction.parse(bytes)
       self.action = unimpInstr("branch_table")
    elseif opcode == 0x0F then
       self.name = "return"
-      self.action = actionInstr({ tag = "return", value = nil })
+      self.action = unimpInstr("return")
    elseif opcode == 0x10 then
       local func_id = readU(bytes, 32)
       self.name = "call"

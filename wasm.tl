@@ -424,12 +424,7 @@ function Stack:empty<T>(): boolean
 	return #self._et == 0
 end
 
-local enum ActionKind 
-	"branch" -- payload := block: number
-	"return"
-end
-
-local type InstructionErasedAction = function(any): Sum<ActionKind>
+local type InstructionErasedAction = function(any)
 
 local enum InstructionName
 	"block_end"
@@ -729,10 +724,7 @@ function VmState:step(): boolean
 	print(instr.name)
 	--self:print_stack()
 
-	local action = instr.action(self)
-	if action ~= nil then
-		error("non nil action not supported")
-	end
+	instr.action(self)
 	frame.current = frame.current + 1
 
 	return true
@@ -772,16 +764,16 @@ function VmState:pop_type(type: ValType): number
 	return v.value
 end
 
-local type InstructionAction = function(VmState): Sum<ActionKind>
+local type InstructionAction = function(VmState)
 
 local function castErased(vmaction: InstructionAction): InstructionErasedAction
-	return function(erased: any): Sum<ActionKind>
-		return vmaction(erased as VmState) 
+	return function(erased: any)
+		vmaction(erased as VmState) 
 	end
 end
 
 local function unimpInstr(name: string): InstructionErasedAction
-	return castErased(function(v: VmState): Sum<ActionKind> v:trap("instruction is not implemented: " .. name) end)
+	return castErased(function(v: VmState) v:trap("instruction is not implemented: " .. name) end)
 end
 
 
@@ -822,7 +814,7 @@ function resolve_ea(v: VmState, bandwith: number, memarg: MemArg): number
 end
 
 function loadInstrAction(signed: boolean, result: ValType, bandwith: number, memarg: MemArg): InstructionAction
-	return function(v: VmState): Sum<ActionKind> 
+	return function(v: VmState) 
 		local ea = resolve_ea(v, bandwith, memarg)
 
 		local value: number
@@ -841,7 +833,7 @@ function loadInstrAction(signed: boolean, result: ValType, bandwith: number, mem
 end
 
 function storeInstrAction(type: ValType, bandwith: number, memarg: MemArg): InstructionAction
-	return function(v: VmState): Sum<ActionKind> 
+	return function(v: VmState) 
 		local c = v.stack:pop()
 		local ea = resolve_ea(v, bandwith, memarg)
 
@@ -968,30 +960,26 @@ function Instruction:varInstr(bytes: BytesIterator, opcode: number)
 
 	if opcode == 0x20 then
 		self.name = "local.get"
-		self.action = castErased(function(v: VmState): Sum<ActionKind> varInstruction(false, "get", index, v) end)
+		self.action = castErased(function(v: VmState) varInstruction(false, "get", index, v) end)
 	elseif opcode == 0x21 then
 		self.name = "local.set"
-		self.action = castErased(function(v: VmState): Sum<ActionKind> varInstruction(false, "set", index, v) end)
+		self.action = castErased(function(v: VmState) varInstruction(false, "set", index, v) end)
 	elseif opcode == 0x22 then
 		self.name = "local.tee"
-		self.action = castErased(function(v: VmState): Sum<ActionKind> varInstruction(false, "tee", index, v) end)
+		self.action = castErased(function(v: VmState) varInstruction(false, "tee", index, v) end)
 	elseif opcode == 0x23 then
 		self.name = "global.get"
-		self.action = castErased(function(v: VmState): Sum<ActionKind> varInstruction(true, "get", index, v) end)
+		self.action = castErased(function(v: VmState) varInstruction(true, "get", index, v) end)
 	elseif opcode == 0x24 then
 		self.name = "global.get"
-		self.action = castErased(function(v: VmState): Sum<ActionKind> varInstruction(true, "set", index, v) end)
+		self.action = castErased(function(v: VmState) varInstruction(true, "set", index, v) end)
 	else 
 		error("Invalid var instr: " .. opcode)
 	end
 end
 
-local function actionInstr(action: Sum<ActionKind>): InstructionErasedAction
-	return castErased(function(_: VmState): Sum<ActionKind> return action end)
-end
-
 local function constInstr(value: number, type: ValType): InstructionErasedAction
-	return castErased(function(v: VmState): Sum<ActionKind> 
+	return castErased(function(v: VmState) 
 		v.stack:push({type = type, value = value})	
 	end)
 end
@@ -999,7 +987,7 @@ end
 local type BinopAction = function(number, number, VmState): number
 
 function binop(type: ValType, action: BinopAction): InstructionErasedAction
-	return castErased(function(v: VmState): Sum<ActionKind> 
+	return castErased(function(v: VmState) 
 		local b = v:pop_type(type)
 		local a = v:pop_type(type)
 		local result = action(a,b,v)
@@ -1010,7 +998,7 @@ end
 local type UnopAction = function(number, VmState): number
 
 function unop(_type: ValType, _action: UnopAction): InstructionErasedAction
-	return castErased(function(v: VmState): Sum<ActionKind> v:trap("unop not implemented") end)
+	return castErased(function(v: VmState) v:trap("unop not implemented") end)
 end
 
 local NumericImpls = {
@@ -1368,7 +1356,7 @@ local blockParse: function(bytes: BytesIterator, opcode: number): Block
 
 function Instruction:blockInstr(_block: Block)
 	self.name = "block"
-	self.action = function(v: VmState): Sum<ActionKind> v:trap("block not implemented") end
+	self.action = function(v: VmState) v:trap("block not implemented") end
 end
 
 function Instruction.parse(bytes: BytesIterator): Instruction
@@ -1381,19 +1369,17 @@ function Instruction.parse(bytes: BytesIterator): Instruction
 		self.name = "block_end"
 	elseif opcode == 0x00 then
 		self.name = "unreachable"
-		self.action = castErased(function(s: VmState): Sum<ActionKind> s:trap("unreachable reached") end)
+		self.action = castErased(function(s: VmState) s:trap("unreachable reached") end)
 	elseif opcode == 0x01 then
 		self.name = "nop"
-		self.action = function(_: any): Sum<ActionKind> end
+		self.action = function(_: any) end
 	elseif opcode >= 0x02 and opcode <= 0x04 then
 		local block = blockParse(bytes, opcode)
 		self:blockInstr(block)
 	elseif opcode == 0x0C then
-		local label = readU(bytes, 32)
+		local _label = readU(bytes, 32)
 		self.name = "branch"
-		self.action = function(_: any): Sum<ActionKind> 
-			return {tag = "branch", value = label}
-		end
+		self.action = unimpInstr("branch")
 	elseif opcode == 0x0d then
 		local _label = readU(bytes, 32)
 		self.name = "branch_if"
@@ -1405,16 +1391,16 @@ function Instruction.parse(bytes: BytesIterator): Instruction
 		self.action = unimpInstr("branch_table")
 	elseif opcode == 0x0F then
 		self.name = "return"
-		self.action = actionInstr({tag = "return", value = nil})
+		self.action = unimpInstr("return")
 	elseif opcode == 0x10 then
 		local func_id = readU(bytes, 32)
 		self.name = "call"
-		self.action = function(v: VmState): Sum<ActionKind> v:doCall(false, func_id) end
+		self.action = function(v: VmState) v:doCall(false, func_id) end
 	elseif opcode == 0x11 then
 		local func_id = readU(bytes, 32)
 		assert(bytes() == 0x00, "no 0 byte after call indirect")
 		self.name = "call_indirect"
-		self.action = function(v: VmState): Sum<ActionKind> v:doCall(true, func_id) end
+		self.action = function(v: VmState) v:doCall(true, func_id) end
 	elseif opcode == 0x1a then
 		self.name = "drop"
 		self.action = unimpInstr("drop")
