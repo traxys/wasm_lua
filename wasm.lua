@@ -496,9 +496,34 @@ local Instruction = {}
 
 
 
+local BlockType = {}
+
+
+
+
+
+local BlockKind = {}
+
+
+
+
+
+
+local Block = {}
+
+
+
+
+
+
+local Label = {}
+
+
+
+
+
 
 local Frame = {}
-
 
 
 
@@ -509,12 +534,16 @@ function Frame.create(locals, code, arity, func)
    local self = setmetatable({}, { __index = Frame })
 
    self.locals = locals
-   self.code = code
-   self.current = 1
    self.arity = arity
    self.funcId = func
+   self.labels = Stack.create()
+   self.labels:push({ code = code, current = 1, kind = "bare", arity = arity })
 
    return self
+end
+
+function Frame:current_label()
+   return self.labels:top()
 end
 
 local Code = {}
@@ -595,14 +624,25 @@ function VmState:trap(message)
    print("backtrace:")
 
    local first = self.frames:pop()
-   print("   f[" .. first.funcId .. "] @ " .. first.current .. " := " .. first.code[first.current].name)
+   print("   f[" .. first.funcId .. "]")
+   local first_label = first.labels:pop()
+   print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current].name)
+
+   while not first.labels:empty() do
+      local label = first.labels:pop()
+      print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+   end
 
    while not self.frames:empty() do
       local top = self.frames:pop()
-      if top.code == nil then
+      if top.funcId == -1 then
          print("   --- END ---")
       else
-         print("   f[" .. top.funcId .. "] @ " .. top.current .. " := " .. top.code[top.current - 1].name)
+         print("   f[" .. top.funcId .. "]")
+         while not top.labels:empty() do
+            local label = top.labels:pop()
+            print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+         end
       end
    end
    if self.stacktrace then
@@ -691,6 +731,10 @@ function VmState.create(
    return self
 end
 
+function VmState:current_frame()
+   return self.frames:top()
+end
+
 function VmState:call(fn, args, arity)
    if self.resolve_func_type(fn) == "local" then
       local body = self.func_body(fn)
@@ -704,28 +748,48 @@ function VmState:call(fn, args, arity)
    end
 end
 
-function VmState:current_frame()
-   return self.frames:top()
+function VmState:block(block)
+   if block.kind == "bare" then
+      self:trap("Can't create bare blocks")
+   end
+
+   local arity = 0
+   if block.blocktype.tag == "indexed" then
+      self:trap("VmState:block[indexed] not implemented")
+   elseif block.blocktype.tag == "valtype" then
+      self:trap("VmState:block[valtype] not implemented")
+   end
+
+   if block.kind == "block" then
+      local current_frame = self:current_frame()
+      current_frame.labels:push({ code = block.main, current = 1, kind = block.kind, arity = arity })
+   elseif block.kind == "if" then
+      self:trap("VmState:if not implemented")
+   elseif block.kind == "loop" then
+      self:trap("VmState:loop not implemented")
+   end
 end
 
 function VmState:step()
    local frame = self:current_frame()
 
-   if frame.code == nil then
-      return false
-   end
 
-   if frame.current > #frame.code then
+
+
+
+   local label = frame:current_label()
+
+   if label.current > #label.code then
       self:trap("Tried to execute code after the end")
    end
 
-   local instr = frame.code[frame.current]
+   local instr = label.code[label.current]
 
    print(instr.name)
 
 
    instr.action(self)
-   frame.current = frame.current + 1
+   label.current = label.current + 1
 
    return true
 end
@@ -736,7 +800,7 @@ function VmState:run()
 
       if not status then
 
-         error("The wasm VM trapped: " .. tostring(value))
+         error("WASM error: " .. tostring(value))
       elseif value == false then
          break
       end
@@ -1345,18 +1409,11 @@ function Instruction:numericInstr(opcode)
    end
 end
 
-local Block = {}
-
-
-
-
-
-
 local blockParse
 
-function Instruction:blockInstr(_block)
+function Instruction:blockInstr(block)
    self.name = "block"
-   self.action = function(v) v:trap("block not implemented") end
+   self.action = function(v) v:block(block) end
 end
 
 function Instruction.parse(bytes)
@@ -1429,18 +1486,6 @@ function Instruction.parse(bytes)
 
    return self
 end
-
-local BlockType = {}
-
-
-
-
-
-local BlockKind = {}
-
-
-
-
 
 
 function Block:tostring()

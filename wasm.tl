@@ -496,25 +496,54 @@ local record Instruction
 	action: InstructionErasedAction
 end
 
+local enum BlockType
+	"epsilon" -- nil
+	"valtype" -- ValType
+	"indexed" -- number
+end
+
+local enum BlockKind 
+	"loop"
+	"block"
+	"if"
+	"bare"
+end
+
+local record Block
+	blocktype: Sum<BlockType>
+	kind: BlockKind
+	main: {Instruction}
+	else_expr: {Instruction}
+end
+
+local record Label
+	code: {Instruction}
+	current: number
+	kind: BlockKind
+	arity: number
+end
 
 local record Frame
 	locals: {WasmValue}
-	code: {Instruction}
-	current: number
 	arity: number
 	funcId: number
+	labels: Stack<Label>
 end
 
 function Frame.create(locals: {WasmValue}, code: {Instruction}, arity: number, func: number): Frame 
 	local self = setmetatable({} as Frame, { __index = Frame})
 
 	self.locals = locals
-	self.code = code
-	self.current = 1
 	self.arity = arity
 	self.funcId = func
+	self.labels = Stack.create() as Stack<Label>
+	self.labels:push({code = code, current = 1, kind = "bare", arity = arity})
 
 	return self
+end
+
+function Frame:current_label(): Label
+	return self.labels:top()
 end
 
 local record Code
@@ -595,14 +624,25 @@ function VmState:trap(message: string)
 	print("backtrace:")
 
 	local first = self.frames:pop()
-	print("   f[" .. first.funcId .. "] @ " .. first.current .. " := " .. first.code[first.current].name)
+	print("   f[" .. first.funcId .. "]")
+	local first_label = first.labels:pop()
+	print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current].name)
+
+	while not first.labels:empty() do
+		local label = first.labels:pop()
+		print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+	end
 
 	while not self.frames:empty() do
 		local top = self.frames:pop()
-		if top.code == nil then
+		if top.funcId == -1 then
 			print("   --- END ---")
 		else
-			print("   f[" .. top.funcId .. "] @ " .. top.current .. " := " .. top.code[top.current - 1].name)
+			print("   f[" .. top.funcId .. "]")
+			while not top.labels:empty() do
+				local label = top.labels:pop()
+				print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+			end
 		end
 	end
 	if self.stacktrace then
@@ -691,6 +731,10 @@ function VmState.create(
 	return self
 end
 
+function VmState:current_frame(): Frame
+	return self.frames:top()
+end
+
 function VmState:call(fn: number, args: {WasmValue}, arity: number)
 	if self.resolve_func_type(fn) == "local" then
 		local body = self.func_body(fn)
@@ -704,28 +748,48 @@ function VmState:call(fn: number, args: {WasmValue}, arity: number)
 	end
 end
 
-function VmState:current_frame(): Frame
-	return self.frames:top()
+function VmState:block(block: Block)
+	if block.kind == "bare" then
+		self:trap("Can't create bare blocks")
+	end
+
+	local arity = 0
+	if block.blocktype.tag == "indexed" then
+		self:trap("VmState:block[indexed] not implemented")
+	elseif block.blocktype.tag == "valtype" then
+		self:trap("VmState:block[valtype] not implemented")
+	end
+
+	if block.kind == "block" then
+		local current_frame = self:current_frame()
+		current_frame.labels:push({code = block.main, current = 1, kind = block.kind, arity = arity})
+	elseif block.kind == "if" then
+		self:trap("VmState:if not implemented")
+	elseif block.kind == "loop" then
+		self:trap("VmState:loop not implemented")
+	end
 end
 
 function VmState:step(): boolean
 	local frame = self:current_frame()
 	-- Return false if we have returned from the function we called
-	if frame.code == nil then
-		return false
-	end
+	--if frame.funcId == -1 then
+	--	return false
+	--end
 
-	if frame.current > #frame.code then
+	local label = frame:current_label()
+
+	if label.current > #label.code then
 		self:trap("Tried to execute code after the end")
 	end
 
-	local instr = frame.code[frame.current]
+	local instr = label.code[label.current]
 
 	print(instr.name)
 	--self:print_stack()
 
 	instr.action(self)
-	frame.current = frame.current + 1
+	label.current = label.current + 1
 
 	return true
 end
@@ -736,7 +800,7 @@ function VmState:run()
 
 		if not status then
 			-- Hiding the internal stack trace of the trap
-			error("The wasm VM trapped: " .. tostring(value))
+			error("WASM error: " .. tostring(value))
 		elseif value == false then
 			break
 		end
@@ -1345,18 +1409,11 @@ function Instruction:numericInstr(opcode: number)
 	end
 end
 
-local record Block
-	blocktype: Sum<BlockType>
-	kind: BlockKind
-	main: {Instruction}
-	else_expr: {Instruction}
-end
-
 local blockParse: function(bytes: BytesIterator, opcode: number): Block
 
-function Instruction:blockInstr(_block: Block)
+function Instruction:blockInstr(block: Block)
 	self.name = "block"
-	self.action = function(v: VmState) v:trap("block not implemented") end
+	self.action = function(v: VmState) v:block(block) end
 end
 
 function Instruction.parse(bytes: BytesIterator): Instruction
@@ -1430,18 +1487,6 @@ function Instruction.parse(bytes: BytesIterator): Instruction
 	return self
 end
 
-local enum BlockType
-	"epsilon" -- nil
-	"valtype" -- ValType
-	"indexed" -- number
-end
-
-local enum BlockKind 
-	"loop"
-	"block"
-	"if"
-	"bare"
-end
 
 function Block:tostring(): string
 	return "TODO"
