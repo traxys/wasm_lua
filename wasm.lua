@@ -26,6 +26,10 @@ local function arrayEqual(lhs, rhs)
    return true
 end
 
+local function mod_pow2(x, power)
+   return x & ((2 ^ power) - 1)
+end
+
 local Sum = {}
 
 
@@ -540,6 +544,23 @@ function Code:locals_array()
    return array
 end
 
+local MEM_PAGE = 65536
+local LinearMemory = {}
+
+
+
+
+
+function LinearMemory.create(min, max)
+   local self = setmetatable({}, { __index = LinearMemory })
+
+   self.max = max
+   self.bytes = {}
+   self.size = min * MEM_PAGE
+
+   return self
+end
+
 local GlobalValue = {}
 
 
@@ -562,6 +583,17 @@ local VmState = {}
 
 
 
+
+function VmState:print_stack()
+   print("Stack:")
+   local i = #self.stack._et
+   while i > 0 do
+      local top = self.stack._et[i]
+      print("    " .. top.value .. ": " .. top.type)
+      i = i - 1
+   end
+end
+
 function VmState:trap(message)
    print("-----------------")
    print("Trap: " .. message)
@@ -579,14 +611,46 @@ function VmState:trap(message)
       end
    end
    if self.stacktrace then
-      print("Stack:")
-      while not self.stack:empty() do
-         local top = self.stack:pop()
-         print("    " .. top.value .. ": " .. top.type)
-      end
+      self:print_stack()
    end
    self.trapped = true
    error("WASM_TRAP")
+end
+
+function LinearMemory:assert_index(ea, bandwith, vm)
+   if ea + bandwith // 8 > self.size then
+      vm:trap("Invalid memory access: ea=" .. ea .. ", bandwith=" .. bandwith)
+   end
+end
+
+function LinearMemory:store_int(ea, bandwith, value, vm)
+   if value.type == "f32" or value.type == "f64" then
+      vm:trap("Tried to store an float as an int")
+   end
+
+   local val = value.value
+
+   local idx = ea
+   while bandwith > 0 do
+      self.bytes[idx] = mod_pow2(val, 8)
+      idx = idx + 1
+      val = val >> 8
+      bandwith = bandwith - 8
+   end
+end
+
+function LinearMemory:load_int(ea, bandwith)
+   local idx = ea
+   local value = 0
+   local i = 0
+   while bandwith > 0 do
+      value = value + self.bytes[idx] << i
+      idx = idx + 1
+      i = i + 8
+      bandwith = bandwith - 8
+   end
+
+   return value
 end
 
 function GlobalValue:write(type, value, vm)
@@ -608,7 +672,14 @@ end
 local ResolveFT = {}
 local CodeFetch = {}
 
-function VmState.create(initial_frame, resolve_func_type, func_body, globals, signature_fetch)
+function VmState.create(
+   initial_frame,
+   resolve_func_type,
+   func_body,
+   globals,
+   signature_fetch,
+   memory)
+
    local self = setmetatable({}, { __index = VmState })
 
    self.stack = Stack.create()
@@ -620,6 +691,7 @@ function VmState.create(initial_frame, resolve_func_type, func_body, globals, si
    self.stacktrace = false
    self.globals = globals
    self.signature_fetch = signature_fetch
+   self.memory = memory
 
    return self
 end
@@ -653,7 +725,9 @@ function VmState:step()
    end
 
    local instr = frame.code[frame.current]
+
    print(instr.name)
+
 
    local action = instr.action(self)
    if action ~= nil then
@@ -734,12 +808,49 @@ function MemArg.parse(bytes)
    return self
 end
 
-function loadInstrAction(_signed, _result, _bandwith, _memarg)
-   return function(v) v:trap("load instr not implemented") end
+function resolve_ea(v, bandwith, memarg)
+   local i_val = v.stack:pop()
+   if i_val.type ~= "i32" then
+      v:trap("Invalid index type in memory store: " .. i_val.type)
+   end
+   local i = i_val.value
+
+   local ea = i + memarg.offset
+   v.memory:assert_index(ea, bandwith)
+
+   return ea
 end
 
-function storeInstrAction(_type, _bandwith, _memarg)
-   return function(v) v:trap("store instr not implemented") end
+function loadInstrAction(signed, result, bandwith, memarg)
+   return function(v)
+      local ea = resolve_ea(v, bandwith, memarg)
+
+      local value
+      if result == "i32" or result == "i64" then
+         if signed then
+            v:trap("signed int load not implemented")
+         else
+            value = v.memory:load_int(ea, bandwith)
+         end
+      else
+         v:trap("float load instr not implemented")
+      end
+
+      v.stack:push({ type = result, value = value })
+   end
+end
+
+function storeInstrAction(type, bandwith, memarg)
+   return function(v)
+      local c = v.stack:pop()
+      local ea = resolve_ea(v, bandwith, memarg)
+
+      if type == "i32" or type == "i64" then
+         v.memory:store_int(ea, bandwith, c)
+      else
+         v:trap("float store instr not implemented")
+      end
+   end
 end
 
 function Instruction:memInstr(bytes, opcode)
@@ -891,7 +1002,7 @@ function binop(type, action)
    return castErased(function(v)
       local b = v:pop_type(type)
       local a = v:pop_type(type)
-      local result = action(a, b)
+      local result = action(a, b, v)
       v.stack:push({ type = type, value = result })
    end)
 end
@@ -999,17 +1110,35 @@ local NumericImpls = {
    end,
 }
 
-function signBinOp(_signed, _op)
-   return function(_a, _b, v)
-      v:trap("signed/unsigned is not implemented")
+function signNumber(number, bandwith)
+   if number < 2 ^ (bandwith - 1) then
+      return number
+   else
+      return number - 2 ^ bandwith
    end
 end
 
 function wrapBinOp(op, bandwith)
-   return function(a, b)
-      local result = op(a, b)
-      return (result + 2 ^ bandwith) & (2 ^ bandwith - 1)
+   return function(a, b, v)
+      local result = op(a, b, v)
+      if result < 0 then
+         result = result + 2 ^ bandwith
+      end
+      return result
    end
+end
+
+function signBinOp(signed, bandwith, op)
+   return wrapBinOp(
+   function(a, b, v)
+      if signed then
+         a = signNumber(a, bandwith)
+         b = signNumber(b, bandwith)
+      end
+
+      return op(a, b, v)
+   end,
+   bandwith)
 end
 
 function Instruction:numericInstr(opcode)
@@ -1024,28 +1153,28 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i32", NumericImpls.ne)
    elseif opcode == 0x48 then
       self.name = "lt"
-      self.action = binop("i32", signBinOp(true, NumericImpls.lt))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.lt))
    elseif opcode == 0x49 then
       self.name = "lt"
-      self.action = binop("i32", signBinOp(false, NumericImpls.lt))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.lt))
    elseif opcode == 0x4a then
       self.name = "gt"
-      self.action = binop("i32", signBinOp(true, NumericImpls.gt))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.gt))
    elseif opcode == 0x4b then
       self.name = "gt"
-      self.action = binop("i32", signBinOp(false, NumericImpls.gt))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.gt))
    elseif opcode == 0x4c then
       self.name = "le"
-      self.action = binop("i32", signBinOp(true, NumericImpls.le))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.le))
    elseif opcode == 0x4d then
       self.name = "le"
-      self.action = binop("i32", signBinOp(false, NumericImpls.le))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.le))
    elseif opcode == 0x4e then
       self.name = "ge"
-      self.action = binop("i32", signBinOp(true, NumericImpls.ge))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.ge))
    elseif opcode == 0x4f then
       self.name = "ge"
-      self.action = binop("i32", signBinOp(false, NumericImpls.ge))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.ge))
    elseif opcode == 0x50 then
       self.name = "eqz"
       self.action = unop("i64", NumericImpls.eqz)
@@ -1057,28 +1186,28 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i64", NumericImpls.ne)
    elseif opcode == 0x53 then
       self.name = "lt"
-      self.action = binop("i64", signBinOp(true, NumericImpls.lt))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.lt))
    elseif opcode == 0x54 then
       self.name = "lt"
-      self.action = binop("i64", signBinOp(false, NumericImpls.lt))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.lt))
    elseif opcode == 0x55 then
       self.name = "gt"
-      self.action = binop("i64", signBinOp(true, NumericImpls.gt))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.gt))
    elseif opcode == 0x56 then
       self.name = "gt"
-      self.action = binop("i64", signBinOp(false, NumericImpls.gt))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.gt))
    elseif opcode == 0x57 then
       self.name = "le"
-      self.action = binop("i64", signBinOp(true, NumericImpls.le))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.le))
    elseif opcode == 0x58 then
       self.name = "le"
-      self.action = binop("i64", signBinOp(false, NumericImpls.le))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.le))
    elseif opcode == 0x59 then
       self.name = "ge"
-      self.action = binop("i64", signBinOp(true, NumericImpls.ge))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.ge))
    elseif opcode == 0x5a then
       self.name = "ge"
-      self.action = binop("i64", signBinOp(false, NumericImpls.ge))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.ge))
    elseif opcode == 0x5b then
       self.name = "eq"
       self.action = binop("f32", NumericImpls.eq)
@@ -1135,16 +1264,16 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i32", NumericImpls.mul)
    elseif opcode == 0x6d then
       self.name = "div"
-      self.action = binop("i32", signBinOp(true, NumericImpls.div))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.div))
    elseif opcode == 0x6e then
       self.name = "div"
-      self.action = binop("i32", signBinOp(false, NumericImpls.div))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.div))
    elseif opcode == 0x6f then
       self.name = "rem"
-      self.action = binop("i32", signBinOp(true, NumericImpls.rem))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.rem))
    elseif opcode == 0x70 then
       self.name = "rem"
-      self.action = binop("i32", signBinOp(false, NumericImpls.rem))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.rem))
    elseif opcode == 0x71 then
       self.name = "and"
       self.action = binop("i32", NumericImpls.i_and)
@@ -1159,10 +1288,10 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i32", NumericImpls.shl)
    elseif opcode == 0x75 then
       self.name = "shr"
-      self.action = binop("i32", signBinOp(true, NumericImpls.shr))
+      self.action = binop("i32", signBinOp(true, 32, NumericImpls.shr))
    elseif opcode == 0x76 then
       self.name = "shr"
-      self.action = binop("i32", signBinOp(false, NumericImpls.shr))
+      self.action = binop("i32", signBinOp(false, 32, NumericImpls.shr))
    elseif opcode == 0x77 then
       self.name = "rotl"
       self.action = binop("i32", NumericImpls.rotl)
@@ -1189,16 +1318,16 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i64", NumericImpls.mul)
    elseif opcode == 0x7f then
       self.name = "div"
-      self.action = binop("i64", signBinOp(true, NumericImpls.div))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.div))
    elseif opcode == 0x80 then
       self.name = "div"
-      self.action = binop("i64", signBinOp(false, NumericImpls.div))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.div))
    elseif opcode == 0x81 then
       self.name = "rem"
-      self.action = binop("i64", signBinOp(true, NumericImpls.rem))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.rem))
    elseif opcode == 0x82 then
       self.name = "rem"
-      self.action = binop("i64", signBinOp(false, NumericImpls.rem))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.rem))
    elseif opcode == 0x83 then
       self.name = "and"
       self.action = binop("i64", NumericImpls.i_and)
@@ -1213,10 +1342,10 @@ function Instruction:numericInstr(opcode)
       self.action = binop("i64", NumericImpls.shl)
    elseif opcode == 0x87 then
       self.name = "shr"
-      self.action = binop("i64", signBinOp(true, NumericImpls.shr))
+      self.action = binop("i64", signBinOp(true, 64, NumericImpls.shr))
    elseif opcode == 0x88 then
       self.name = "shr"
-      self.action = binop("i64", signBinOp(false, NumericImpls.shr))
+      self.action = binop("i64", signBinOp(false, 64, NumericImpls.shr))
    elseif opcode == 0x89 then
       self.name = "rotl"
       self.action = binop("i64", NumericImpls.rotl)
@@ -1439,6 +1568,15 @@ local Program = {}
 
 
 
+function Program:createMemory()
+   if #self.memory ~= 1 then
+      error("Only programs with exactly one memory are supported")
+   end
+
+   local limit = self.memory[1].limit
+   return LinearMemory.create(limit.min, limit.max)
+end
+
 function Program:resolve(fn)
    if fn > self.max_import then
       return "local"
@@ -1583,6 +1721,7 @@ function GlobalValue.load(g)
    Frame.create(nil, g.init, 0, -1),
    function(_) error("can't call functions in global init") end,
    function(_) error("can't call functions in global init") end,
+   nil,
    nil)
 
    vm:step()
@@ -1600,6 +1739,7 @@ local WasmInstance = {}
 
 
 
+
 function WasmInstance.load(p)
    local self = setmetatable({}, { __index = WasmInstance })
 
@@ -1607,6 +1747,7 @@ function WasmInstance.load(p)
    self.globals = mapArray(p.global, function(g)
       return GlobalValue.load(g)
    end)
+   self.memory = p:createMemory()
 
    return self
 end
@@ -1621,7 +1762,8 @@ function WasmInstance:executeInit(fn)
    function(fn) return self.program:resolve(fn) end,
    function(fn) return self.program:func_body(fn) end,
    self.globals,
-   function(fn) return self.program:signature(fn) end)
+   function(fn) return self.program:signature(fn) end,
+   self.memory)
 
    vm:call(fn, {}, 0)
    vm.stacktrace = true
