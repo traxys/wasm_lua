@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local utils = require("wasm.utils")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local utils = require("wasm.utils")
 local types = require("wasm.types")
 local runtime = require("wasm.runtime")
 local BytesIterator = utils.BytesIterator
@@ -239,8 +239,9 @@ local function memInstr(self, bytes, opcode)
          bandwith = 64
       end
 
-      self.name = "load"
-      self.action = runtime.castErased(loadInstrAction(signed, ty, bandwith, types.MemArg.parse(bytes)))
+      self.kind = "load"
+      self.desc = ty .. ".load" .. (signed and "_s" or "_u") .. "_" .. bandwith
+      self.action = runtime.castErased(runtime.loadInstrAction(signed, ty, bandwith, types.MemArg.parse(bytes)))
    elseif opcode >= 0x36 and opcode <= 0x3E then
       local ty
       if opcode == 0x36 or opcode == 0x3A or opcode == 0x3B then
@@ -264,15 +265,16 @@ local function memInstr(self, bytes, opcode)
          bandwith = 64
       end
 
-      self.name = "store"
-      self.action = runtime.castErased(storeInstrAction(ty, bandwith, types.MemArg.parse(bytes)))
+      self.kind = "store"
+      self.desc = ty .. ".store_" .. bandwith
+      self.action = runtime.castErased(runtime.storeInstrAction(ty, bandwith, types.MemArg.parse(bytes)))
    elseif opcode == 0x3F then
       assert(bytes() == 0x00, "memory.size requires a following 0 byte")
-      self.name = "memory.size"
+      self.kind = "memory.size"
       self.action = runtime.unimpInstr("size not implemented")
    elseif opcode == 0x3E then
       assert(bytes() == 0x00, "memory.grow requires a following 0 byte")
-      self.name = "memory.grow"
+      self.kind = "memory.grow"
       self.action = runtime.unimpInstr("grow not implemented")
    end
 end
@@ -322,19 +324,20 @@ local function varInstr(self, bytes, opcode)
    local index = readU(bytes, 32)
 
    if opcode == 0x20 then
-      self.name = "local.get"
+      self.kind = "local.get"
       self.action = runtime.castErased(function(v) varInstruction(false, "get", index, v) end)
    elseif opcode == 0x21 then
-      self.name = "local.set"
+      self.kind = "local.set"
       self.action = runtime.castErased(function(v) varInstruction(false, "set", index, v) end)
    elseif opcode == 0x22 then
-      self.name = "local.tee"
+      self.kind = "local.tee"
       self.action = runtime.castErased(function(v) varInstruction(false, "tee", index, v) end)
    elseif opcode == 0x23 then
-      self.name = "global.get"
+      self.kind = "global.get"
+      self.constant = true
       self.action = runtime.castErased(function(v) varInstruction(true, "get", index, v) end)
    elseif opcode == 0x24 then
-      self.name = "global.get"
+      self.kind = "global.set"
       self.action = runtime.castErased(function(v) varInstruction(true, "set", index, v) end)
    else
       error("Invalid var instr: " .. opcode)
@@ -343,214 +346,214 @@ end
 
 local function numericInstr(self, opcode)
    if opcode == 0x45 then
-      self.name = "eqz"
+      self.kind = "eqz"
       self.action = unop("i32", NumericImpls.eqz)
    elseif opcode == 0x46 then
-      self.name = "eq"
+      self.kind = "eq"
       self.action = binop("i32", NumericImpls.eq)
    elseif opcode == 0x47 then
-      self.name = "ne"
+      self.kind = "ne"
       self.action = binop("i32", NumericImpls.ne)
    elseif opcode == 0x48 then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.lt))
    elseif opcode == 0x49 then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.lt))
    elseif opcode == 0x4a then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.gt))
    elseif opcode == 0x4b then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.gt))
    elseif opcode == 0x4c then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.le))
    elseif opcode == 0x4d then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.le))
    elseif opcode == 0x4e then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.ge))
    elseif opcode == 0x4f then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.ge))
    elseif opcode == 0x50 then
-      self.name = "eqz"
+      self.kind = "eqz"
       self.action = unop("i64", NumericImpls.eqz)
    elseif opcode == 0x51 then
-      self.name = "eq"
+      self.kind = "eq"
       self.action = binop("i64", NumericImpls.eq)
    elseif opcode == 0x52 then
-      self.name = "ne"
+      self.kind = "ne"
       self.action = binop("i64", NumericImpls.ne)
    elseif opcode == 0x53 then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.lt))
    elseif opcode == 0x54 then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.lt))
    elseif opcode == 0x55 then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.gt))
    elseif opcode == 0x56 then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.gt))
    elseif opcode == 0x57 then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.le))
    elseif opcode == 0x58 then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.le))
    elseif opcode == 0x59 then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.ge))
    elseif opcode == 0x5a then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.ge))
    elseif opcode == 0x5b then
-      self.name = "eq"
+      self.kind = "eq"
       self.action = binop("f32", NumericImpls.eq)
    elseif opcode == 0x5c then
-      self.name = "ne"
+      self.kind = "ne"
       self.action = binop("f32", NumericImpls.ne)
    elseif opcode == 0x5d then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("f32", NumericImpls.lt)
    elseif opcode == 0x5e then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("f32", NumericImpls.gt)
    elseif opcode == 0x5f then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("f32", NumericImpls.le)
    elseif opcode == 0x60 then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("f32", NumericImpls.ge)
    elseif opcode == 0x61 then
-      self.name = "eq"
+      self.kind = "eq"
       self.action = binop("f64", NumericImpls.eq)
    elseif opcode == 0x62 then
-      self.name = "ne"
+      self.kind = "ne"
       self.action = binop("f64", NumericImpls.ne)
    elseif opcode == 0x63 then
-      self.name = "lt"
+      self.kind = "lt"
       self.action = binop("f64", NumericImpls.lt)
    elseif opcode == 0x64 then
-      self.name = "gt"
+      self.kind = "gt"
       self.action = binop("f64", NumericImpls.gt)
    elseif opcode == 0x65 then
-      self.name = "le"
+      self.kind = "le"
       self.action = binop("f64", NumericImpls.le)
    elseif opcode == 0x66 then
-      self.name = "ge"
+      self.kind = "ge"
       self.action = binop("f64", NumericImpls.ge)
    elseif opcode == 0x67 then
-      self.name = "clz"
+      self.kind = "clz"
       self.action = unop("i32", NumericImpls.clz)
    elseif opcode == 0x68 then
-      self.name = "ctz"
+      self.kind = "ctz"
       self.action = unop("i32", NumericImpls.ctz)
    elseif opcode == 0x69 then
-      self.name = "popcnt"
+      self.kind = "popcnt"
       self.action = unop("i32", NumericImpls.popcnt)
    elseif opcode == 0x6a then
-      self.name = "add"
+      self.kind = "add"
       self.action = binop("i32", NumericImpls.add)
    elseif opcode == 0x6b then
-      self.name = "sub"
+      self.kind = "sub"
       self.action = binop("i32", wrapBinOp(NumericImpls.sub, 32))
    elseif opcode == 0x6c then
-      self.name = "mul"
+      self.kind = "mul"
       self.action = binop("i32", NumericImpls.mul)
    elseif opcode == 0x6d then
-      self.name = "div"
+      self.kind = "div"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.div))
    elseif opcode == 0x6e then
-      self.name = "div"
+      self.kind = "div"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.div))
    elseif opcode == 0x6f then
-      self.name = "rem"
+      self.kind = "rem"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.rem))
    elseif opcode == 0x70 then
-      self.name = "rem"
+      self.kind = "rem"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.rem))
    elseif opcode == 0x71 then
-      self.name = "and"
+      self.kind = "and"
       self.action = binop("i32", NumericImpls.i_and)
    elseif opcode == 0x72 then
-      self.name = "or"
+      self.kind = "or"
       self.action = binop("i32", NumericImpls.i_or)
    elseif opcode == 0x73 then
-      self.name = "xor"
+      self.kind = "xor"
       self.action = binop("i32", NumericImpls.xor)
    elseif opcode == 0x74 then
-      self.name = "shl"
+      self.kind = "shl"
       self.action = binop("i32", NumericImpls.shl)
    elseif opcode == 0x75 then
-      self.name = "shr"
+      self.kind = "shr"
       self.action = binop("i32", signBinOp(true, 32, NumericImpls.shr))
    elseif opcode == 0x76 then
-      self.name = "shr"
+      self.kind = "shr"
       self.action = binop("i32", signBinOp(false, 32, NumericImpls.shr))
    elseif opcode == 0x77 then
-      self.name = "rotl"
+      self.kind = "rotl"
       self.action = binop("i32", NumericImpls.rotl)
    elseif opcode == 0x78 then
-      self.name = "rotr"
+      self.kind = "rotr"
       self.action = binop("i32", NumericImpls.rotr)
    elseif opcode == 0x79 then
-      self.name = "clz"
+      self.kind = "clz"
       self.action = unop("i64", NumericImpls.clz)
    elseif opcode == 0x7a then
-      self.name = "ctz"
+      self.kind = "ctz"
       self.action = unop("i64", NumericImpls.ctz)
    elseif opcode == 0x7b then
-      self.name = "popcnt"
+      self.kind = "popcnt"
       self.action = unop("i64", NumericImpls.popcnt)
    elseif opcode == 0x7c then
-      self.name = "add"
+      self.kind = "add"
       self.action = binop("i64", NumericImpls.add)
    elseif opcode == 0x7d then
-      self.name = "sub"
+      self.kind = "sub"
       self.action = binop("i64", wrapBinOp(NumericImpls.sub, 64))
    elseif opcode == 0x7e then
-      self.name = "mul"
+      self.kind = "mul"
       self.action = binop("i64", NumericImpls.mul)
    elseif opcode == 0x7f then
-      self.name = "div"
+      self.kind = "div"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.div))
    elseif opcode == 0x80 then
-      self.name = "div"
+      self.kind = "div"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.div))
    elseif opcode == 0x81 then
-      self.name = "rem"
+      self.kind = "rem"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.rem))
    elseif opcode == 0x82 then
-      self.name = "rem"
+      self.kind = "rem"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.rem))
    elseif opcode == 0x83 then
-      self.name = "and"
+      self.kind = "and"
       self.action = binop("i64", NumericImpls.i_and)
    elseif opcode == 0x84 then
-      self.name = "or"
+      self.kind = "or"
       self.action = binop("i64", NumericImpls.i_or)
    elseif opcode == 0x85 then
-      self.name = "xor"
+      self.kind = "xor"
       self.action = binop("i64", NumericImpls.xor)
    elseif opcode == 0x86 then
-      self.name = "shl"
+      self.kind = "shl"
       self.action = binop("i64", NumericImpls.shl)
    elseif opcode == 0x87 then
-      self.name = "shr"
+      self.kind = "shr"
       self.action = binop("i64", signBinOp(true, 64, NumericImpls.shr))
    elseif opcode == 0x88 then
-      self.name = "shr"
+      self.kind = "shr"
       self.action = binop("i64", signBinOp(false, 64, NumericImpls.shr))
    elseif opcode == 0x89 then
-      self.name = "rotl"
+      self.kind = "rotl"
       self.action = binop("i64", NumericImpls.rotl)
    elseif opcode == 0x8a then
-      self.name = "rotr"
+      self.kind = "rotr"
       self.action = binop("i64", NumericImpls.rotr)
    else
       error("numeric instruction not implemented: " .. opcode)
@@ -558,34 +561,35 @@ local function numericInstr(self, opcode)
 end
 
 local function blockInstr(self, block)
-   self.name = "block"
+   self.kind = "block"
    self.action = function(v) v:block(block) end
 end
 
 function types.Instruction.parse(bytes)
    local self = setmetatable({}, { __index = types.Instruction, __tostring = function(s) return s:tostring() end })
+   self.constant = false
 
    local opcode = bytes()
    if opcode == 0x05 then
-      self.name = "else_start"
+      self.kind = "else_start"
    elseif opcode == 0x0B then
-      self.name = "block_end"
+      self.kind = "block_end"
    elseif opcode == 0x00 then
-      self.name = "unreachable"
+      self.kind = "unreachable"
       self.action = runtime.castErased(function(s) s:trap("unreachable reached") end)
    elseif opcode == 0x01 then
-      self.name = "nop"
+      self.kind = "nop"
       self.action = function(_) end
    elseif opcode >= 0x02 and opcode <= 0x04 then
       local block = types.Block.parse(bytes, opcode)
       blockInstr(self, block)
    elseif opcode == 0x0C then
       local _label = readU(bytes, 32)
-      self.name = "branch"
+      self.kind = "branch"
       self.action = runtime.unimpInstr("branch")
    elseif opcode == 0x0d then
       local label = readU(bytes, 32)
-      self.name = "branch_if"
+      self.kind = "branch_if"
       self.action = runtime.castErased(function(v)
          local bool = v:pop_type("i32")
          if bool ~= 0 then
@@ -595,37 +599,45 @@ function types.Instruction.parse(bytes)
    elseif opcode == 0x0e then
       local _labels = readVec(bytes, function(b) return readU(b, 32) end)
       local _l = readU(bytes, 32)
-      self.name = "branch_table"
+      self.kind = "branch_table"
       self.action = runtime.unimpInstr("branch_table")
    elseif opcode == 0x0F then
-      self.name = "return"
+      self.kind = "return"
       self.action = runtime.unimpInstr("return")
    elseif opcode == 0x10 then
       local func_id = readU(bytes, 32)
-      self.name = "call"
+      self.kind = "call"
+      self.desc = "call(" .. func_id .. ")"
       self.action = function(v) v:doCall(false, func_id) end
    elseif opcode == 0x11 then
       local func_id = readU(bytes, 32)
       assert(bytes() == 0x00, "no 0 byte after call indirect")
-      self.name = "call_indirect"
+      self.kind = "call_indirect"
+      self.desc = "call_indirect(" .. func_id .. ")"
       self.action = function(v) v:doCall(true, func_id) end
    elseif opcode == 0x1a then
-      self.name = "drop"
+      self.kind = "drop"
+      self.desc = "drop"
       self.action = runtime.unimpInstr("drop")
    elseif opcode == 0x1B then
-      self.name = "select"
+      self.kind = "select"
+      self.desc = "select"
       self.action = runtime.unimpInstr("select")
    elseif opcode >= 0x20 and opcode <= 0x24 then
       varInstr(self, bytes, opcode)
    elseif opcode >= 0x28 and opcode <= 0x40 then
       memInstr(self, bytes, opcode)
    elseif opcode == 0x41 then
-      self.name = "const"
+      self.kind = "const"
       local val = readS(bytes, 32)
+      self.desc = "i32.const=" .. val
+      self.constant = true
       self.action = runtime.constInstr(val, "i32")
    elseif opcode == 0x42 then
-      self.name = "const"
+      self.kind = "const"
+      self.constant = true
       local val = readS(bytes, 64)
+      self.desc = "i64.const=" .. val
       self.action = runtime.constInstr(val, "i64")
    elseif opcode == 0x43 or opcode == 0x44 then
       error("float litteral not implemented")
@@ -675,9 +687,9 @@ function types.Block.parse(bytes, opcode)
    self.main = {}
    while (true) do
       local i = types.Instruction.parse(bytes)
-      if i.name == "block_end" then
+      if i.kind == "block_end" then
          break
-      elseif i.name == "else_start" then
+      elseif i.kind == "else_start" then
          has_else = true
          break
       else
@@ -690,9 +702,9 @@ function types.Block.parse(bytes, opcode)
       self.else_expr = {}
       while (true) do
          local i = types.Instruction.parse(bytes)
-         if i.name == "block_end" then
+         if i.kind == "block_end" then
             break
-         elseif i.name == "else_start" then
+         elseif i.kind == "else_start" then
             error("Did not expect start of else in else")
          else
             table.insert(self.else_expr, i)
@@ -722,7 +734,18 @@ function types.Global.parse(bytes)
    return self
 end
 
+function types.DataSegment.parse(bytes)
+   local self = setmetatable({}, { __index = types.DataSegment, __tostring = function(s) return s:tostring() end })
+
+   self.memory = readU(bytes, 32)
+   self.init = types.Block.parse(bytes, nil).main
+   self.data = readVec(bytes, function(bytes) return bytes() end)
+
+   return self
+end
+
 local Program = {}
+
 
 
 
@@ -758,7 +781,7 @@ function Program:signature(fn)
    if self:resolve(fn) == "local" then
       type_idx = self.functions[fn - self.max_import]
    else
-      type_idx = self.func_import[fn]
+      type_idx = self.func_import[fn][1]
    end
 
    return self.type[type_idx + 1]
@@ -773,6 +796,14 @@ function Program:is_init_fn(fn)
    local sig_id = self.functions[fn] + 1
    local sig = self.type[sig_id]
    return #sig.inputs == 0 and #sig.outputs == 0
+end
+
+function Program:imported_functions()
+   local names = {}
+   for i, v in pairs(self.func_import) do
+      names[i] = { v[2], v[3] }
+   end
+   return names
 end
 
 function Program.parse(bytes)
@@ -821,8 +852,7 @@ function Program.parse(bytes)
       elseif section_id == 10 then
          self.code = readVecSection(bytes, function(bytes) return types.Code.parse(bytes) end)
       elseif section_id == 11 then
-         print("Todo: data")
-         discardSection(bytes)
+         self.data = readVecSection(bytes, types.DataSegment.parse)
       else
          error("section id " .. tostring(section_id) .. " is invalid")
       end
@@ -834,7 +864,7 @@ function Program.parse(bytes)
    for i, v in ipairs(self.import) do
       if v.desc.tag == "funcref" then
          self.max_import = self.max_import + 1
-         self.func_import[i] = v.desc.value
+         self.func_import[i - 1] = { v.desc.value, v.mod, v.name }
       end
    end
 
@@ -872,6 +902,10 @@ function Program:print()
    end
    print("Code:")
    for _, v in ipairs(self.code) do
+      print("    " .. tostring(v))
+   end
+   print("Data:")
+   for _, v in ipairs(self.data) do
       print("    " .. tostring(v))
    end
 end

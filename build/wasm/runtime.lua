@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local table = _tl_compat and _tl_compat.table or table; local types = require("wasm.types")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local table = _tl_compat and _tl_compat.table or table; local xpcall = _tl_compat and _tl_compat.xpcall or xpcall; local types = require("wasm.types")
 local utils = require("wasm.utils")
 local Stack = require("wasm.stack")
 local WasmValue = types.WasmValue
@@ -94,6 +94,14 @@ local VmState = {}
 
 
 
+
+
+local ImportedFunction = {}
+
+
+
+
+
 function LinearMemory:assert_index(ea, bandwith, vm)
    if ea + bandwith // 8 > self.size then
       vm:trap("Invalid memory access: ea=" .. ea .. ", bandwith=" .. bandwith)
@@ -121,7 +129,7 @@ function LinearMemory:load_int(ea, bandwith)
    local value = 0
    local i = 0
    while bandwith > 0 do
-      value = value + self.bytes[idx] << i
+      value = value + (self.bytes[idx] or 0) << i
       idx = idx + 1
       i = i + 8
       bandwith = bandwith - 8
@@ -164,11 +172,11 @@ function VmState:trap(message)
    local first = self.frames:pop()
    print("   f[" .. first.funcId .. "]")
    local first_label = first.labels:pop()
-   print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current].name)
+   print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current]:tostring())
 
    while not first.labels:empty() do
       local label = first.labels:pop()
-      print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+      print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1]:tostring())
    end
 
    while not self.frames:empty() do
@@ -179,7 +187,7 @@ function VmState:trap(message)
          print("   f[" .. top.funcId .. "]")
          while not top.labels:empty() do
             local label = top.labels:pop()
-            print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+            print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1]:tostring())
          end
       end
    end
@@ -196,7 +204,8 @@ function VmState.create(
    func_body,
    globals,
    signature_fetch,
-   memory)
+   memory,
+   imports)
 
    local self = setmetatable({}, { __index = VmState })
 
@@ -210,9 +219,31 @@ function VmState.create(
    self.globals = globals
    self.signature_fetch = signature_fetch
    self.memory = memory
+   self.imports = imports
+   self.cst = false
 
    return self
 end
+
+function VmState.constant(
+   init,
+   memory,
+   globals)
+
+   local vm = VmState.create(
+   Frame.create(nil, init, 0, -1),
+   function(_) error("can't call functions in constant") end,
+   function(_) error("can't call functions in constant") end,
+   globals,
+   function(_) error("can't call functions in constant") end,
+   memory,
+   nil)
+
+   vm.cst = true
+
+   return vm
+end
+
 
 function VmState:current_frame()
    return self.frames:top()
@@ -227,7 +258,18 @@ function VmState:call(fn, args, arity)
       end
       self.frames:push(Frame.create(args, body.expr, arity, fn))
    else
-      error("imported functions are not available")
+      local import = self.imports[fn]
+
+      if not xpcall(import.body, function(err)
+            print("----------------")
+            print("Host error: " .. tostring(err))
+         end, self, args) then
+         if not self.trapped then
+            self:trap("Host function " .. import.name .. " errrored")
+         else
+            error("Host function failed")
+         end
+      end
    end
 end
 
@@ -275,15 +317,23 @@ function VmState:step()
    local label = frame:current_label()
 
    if label.current > #label.code then
-      self:trap("Tried to execute code after the end")
+      if #self.frames._et == 1 then
+
+         return false
+      else
+         self:trap("Tried to execute code after the end")
+      end
    end
 
    local instr = label.code[label.current]
+   if self.cst and not instr.constant then
+      self:trap("Tried to execute a non constant instruction in a constant context: " .. instr:tostring())
+   end
 
-   print(instr.name)
-
-
+   print(instr:tostring())
    instr.action(self)
+   self:print_stack()
+
    label.current = label.current + 1
 
    return true
@@ -291,7 +341,7 @@ end
 
 function VmState:run()
    while (true) do
-      local status, value = pcall(function() self:step() end)
+      local status, value = pcall(function() return self:step() end)
 
       if not status then
 
@@ -314,6 +364,10 @@ function VmState:doCall(indirect, fn)
 end
 
 function VmState:pop_type(type)
+   if self.stack:empty() then
+      self:trap("Tried to pop from an empty stack")
+   end
+
    local v = self.stack:pop()
 
    if v.type ~= type then
@@ -435,18 +489,9 @@ function GlobalValue.load(g)
    local self = setmetatable({}, { __index = GlobalValue })
 
    self.type = g.type
-   if #g.init ~= 1 then
-      error("Init must be exactly 1 instruction")
-   end
 
-   local vm = VmState.create(
-   Frame.create(nil, g.init, 0, -1),
-   function(_) error("can't call functions in global init") end,
-   function(_) error("can't call functions in global init") end,
-   nil,
-   nil)
-
-   vm:step()
+   local vm = VmState.constant(g.init, nil, nil)
+   vm:run()
    local value = vm.stack:pop()
    if value.type ~= self.type.type then
       error("Intializer is invalid: expected " .. self.type.type .. ", got: " .. value.type)
@@ -463,8 +508,11 @@ return {
    constInstr = constInstr,
    wrapBinOp = wrapBinOp,
    signBinOp = signBinOp,
+   loadInstrAction = loadInstrAction,
+   storeInstrAction = storeInstrAction,
    VmState = VmState,
    LinearMemory = LinearMemory,
    GlobalValue = GlobalValue,
    Frame = Frame,
+   ImportedFunction = ImportedFunction,
 }

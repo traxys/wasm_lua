@@ -122,7 +122,7 @@ end
 
 local InstructionErasedAction = {}
 
-local InstructionName = {}
+local InstructionKind = {}
 
 
 
@@ -194,8 +194,10 @@ local Instruction = {}
 
 
 
+
+
 function Instruction:tostring()
-   return self.name
+   return (self.desc or self.kind)
 end
 
 local BlockType = {}
@@ -259,9 +261,20 @@ local Global = {}
 
 
 function Global:tostring()
-   return tostring(self.type) .. " := " .. table.concat(utils.mapArray(self.init, function(instr) return instr.name end), ";")
+   return tostring(self.type) .. " := " .. table.concat(utils.mapArray(self.init, function(instr) return instr:tostring() end), ";")
 end
 
+local DataSegment = {}
+
+
+
+
+
+
+
+function DataSegment:tostring()
+   return "data: init={" .. table.concat(utils.stringArray(self.init), ";") .. "}, data={" .. table.concat(utils.stringArray(self.data), ",") .. "}"
+end
 
 return {
    ValType = ValType,
@@ -277,7 +290,7 @@ return {
    Export = Export,
    Locals = Locals,
    InstructionErasedAction = InstructionErasedAction,
-   InstructionName = InstructionName,
+   InstructionKind = InstructionKind,
    Instruction = Instruction,
    BlockType = BlockType,
    BlockKind = BlockKind,
@@ -287,4 +300,5 @@ return {
    FunctionKind = FunctionKind,
    Global = Global,
    WasmValue = WasmValue,
+   DataSegment = DataSegment,
 }
