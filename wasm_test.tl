@@ -1,4 +1,4 @@
-local input_file = "wasm_examples/guessing_game.wasm"
+local input_file = "wasm_examples/simple.wasm"
 local file = io.open(input_file, 'rb')
 local input = {}
 repeat
@@ -16,7 +16,7 @@ local function main()
 	local program = wasm.Program.parse(bytes)
 	program:print()
 	local instance = wasm.WasmInstance.load(program)
-	instance:executeInit(4)
+	instance:executeInit(2)
 end
 
 main()

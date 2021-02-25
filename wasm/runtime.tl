@@ -86,12 +86,20 @@ local record VmState
 	stacktrace: boolean
 	globals: {GlobalValue}
 	memory: LinearMemory
+	imports: {any}
+	cst: boolean
 
 	resolve_func_type: function(number): types.FunctionKind
 	func_body: function(number): types.Code
 	signature_fetch: function(number): types.FuncType
 
 	trap: function(VmState, string)
+end
+
+local record ImportedFunction
+	signature: types.FuncType
+	name: string
+	body: function(VmState)
 end
 
 function LinearMemory:assert_index(ea: number, bandwith: number, vm: VmState)
@@ -121,7 +129,7 @@ function LinearMemory:load_int(ea: number, bandwith: number): number
 	local value = 0
 	local i = 0
 	while bandwith > 0 do
-		value = value + self.bytes[idx] << i
+		value = value + (self.bytes[idx] or 0) << i
 		idx = idx + 1
 		i = i + 8
 		bandwith = bandwith - 8
@@ -164,11 +172,11 @@ function VmState:trap(message: string)
 	local first = self.frames:pop()
 	print("   f[" .. first.funcId .. "]")
 	local first_label = first.labels:pop()
-	print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current].name)
+	print("      lbl[" .. first_label.kind .. "] @ " .. first_label.current .. " := " .. first_label.code[first_label.current]:tostring())
 
 	while not first.labels:empty() do
 		local label = first.labels:pop()
-		print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+		print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1]:tostring())
 	end
 
 	while not self.frames:empty() do
@@ -179,7 +187,7 @@ function VmState:trap(message: string)
 			print("   f[" .. top.funcId .. "]")
 			while not top.labels:empty() do
 				local label = top.labels:pop()
-				print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1].name)
+				print("      lbl[" .. label.kind .. "] @ " .. label.current - 1 .. " := " .. label.code[label.current - 1]:tostring())
 			end
 		end
 	end
@@ -196,7 +204,8 @@ function VmState.create(
 	func_body: (function(number): types.Code), 
 	globals: {GlobalValue}, 
 	signature_fetch: (function(number): types.FuncType),
-	memory: LinearMemory
+	memory: LinearMemory,
+	imports: {ImportedFunction}
 ): VmState 
 	local self = setmetatable({} as VmState, { __index = VmState})
 
@@ -210,9 +219,31 @@ function VmState.create(
 	self.globals = globals
 	self.signature_fetch = signature_fetch
 	self.memory = memory
+	self.imports = imports
+	self.cst = false
 
 	return self
 end
+
+function VmState.constant(
+	init: {types.Instruction},
+	memory: LinearMemory,
+	globals: {GlobalValue}
+): VmState
+	local vm = VmState.create(
+		Frame.create(nil, init, 0, -1),
+		function(_: number): types.FunctionKind error("can't call functions in constant") end,
+		function(_: number): types.Code error("can't call functions in constant") end,
+		globals,
+		function(_: number): types.FuncType error("can't call functions in constant") end,
+		memory,
+		nil
+	)
+	vm.cst = true
+
+	return vm
+end
+
 
 function VmState:current_frame(): Frame
 	return self.frames:top()
@@ -227,7 +258,7 @@ function VmState:call(fn: number, args: {WasmValue}, arity: number)
 		end
 		self.frames:push(Frame.create(args, body.expr, arity, fn))
 	else 
-		error("imported functions are not available")
+		self:trap("imported functions are not available")
 	end
 end
 
@@ -275,12 +306,17 @@ function VmState:step(): boolean
 	local label = frame:current_label()
 
 	if label.current > #label.code then
-		self:trap("Tried to execute code after the end")
+		if #self.frames._et == 1 then
+			-- we were at the root frame, so we just have to stop executing
+			return false
+		else
+			self:trap("Tried to execute code after the end")
+		end
 	end
 
 	local instr = label.code[label.current]
 
-	print(instr.name)
+	print(instr:tostring())
 	--self:print_stack()
 
 	instr.action(self)
@@ -291,7 +327,7 @@ end
 
 function VmState:run()
 	while(true) do
-		local status, value = pcall(function(): boolean self:step() end)
+		local status, value = pcall(function(): boolean return self:step() end)
 
 		if not status then
 			-- Hiding the internal stack trace of the trap
@@ -435,18 +471,9 @@ function GlobalValue.load(g: types.Global): GlobalValue
 	local self = setmetatable({} as GlobalValue, { __index = GlobalValue})
 
 	self.type = g.type
-	if #g.init ~= 1 then
-		error("Init must be exactly 1 instruction")
-	end
 
-	local vm = VmState.create(
-		Frame.create(nil, g.init, 0, -1),
-		function(_: number): types.FunctionKind error("can't call functions in global init") end,
-		function(_: number): types.Code error("can't call functions in global init") end,
-		nil,
-		nil
-	)
-	vm:step()
+	local vm = VmState.constant(g.init, nil, nil)
+	vm:run()
 	local value = vm.stack:pop()
 	if value.type ~= self.type.type then
 		error("Intializer is invalid: expected " .. self.type.type .. ", got: " .. value.type)

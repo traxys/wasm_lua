@@ -10,7 +10,7 @@ local record WasmInstance
 	memory: runtime.LinearMemory
 end
 
-function WasmInstance.load(p: parser.Program): WasmInstance
+function WasmInstance.load(p: parser.Program, function_imports: {string:{string:function(runtime.VmState)}}): WasmInstance
 	local self = setmetatable({} as WasmInstance, { __index = WasmInstance})
 
 	self.program = p
@@ -18,6 +18,19 @@ function WasmInstance.load(p: parser.Program): WasmInstance
 		return runtime.GlobalValue.load(g)
 	end)
 	self.memory = p:createMemory()
+	for _,v in ipairs(p.data) do
+		local vm = runtime.VmState.constant(v.init, self.memory, self.globals)
+		vm:run()
+
+		local offset = vm.stack:pop()
+		if offset.type ~= "i32" then
+			error("Invalid offset in data: expected i32, got " .. offset.type)
+		end
+		local offset_value = offset.value - 1
+		for i,v in ipairs(v.data) do
+			self.memory.bytes[offset_value + i] = v
+		end
+	end
 
 	return self
 end

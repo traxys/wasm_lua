@@ -122,7 +122,7 @@ end
 
 local type InstructionErasedAction = function(any)
 
-local enum InstructionName
+local enum InstructionKind
 	"block_end"
 	"else_start"
 	"unreachable"
@@ -188,14 +188,15 @@ local enum InstructionName
 end
 
 local record Instruction
-	name: InstructionName
+	kind: InstructionKind
+	desc: string
 	action: InstructionErasedAction
 
 	parse: function(BytesIterator): Instruction
 end
 
 function Instruction:tostring(): string
-	return self.name
+	return (self.desc or self.kind)
 end
 
 local enum BlockType
@@ -259,9 +260,20 @@ local record Global
 end
 
 function Global:tostring(): string
-	return tostring(self.type) .. " := " .. table.concat(utils.mapArray(self.init, function(instr: Instruction): string return instr.name end), ";")
+	return tostring(self.type) .. " := " .. table.concat(utils.mapArray(self.init, function(instr: Instruction): string return instr:tostring() end), ";")
 end
 
+local record DataSegment
+	memory: number
+	init: {Instruction}
+	data: {number}
+
+	parse: function(BytesIterator): DataSegment
+end
+
+function DataSegment:tostring(): string
+	return "data: init={" .. table.concat(utils.stringArray(self.init), ";") .. "}, data={" .. table.concat(utils.stringArray(self.data), ",") .."}"
+end
 
 return {
 	ValType = ValType,
@@ -277,7 +289,7 @@ return {
 	Export = Export,
 	Locals = Locals,
 	InstructionErasedAction = InstructionErasedAction,
-	InstructionName = InstructionName,
+	InstructionKind = InstructionKind,
 	Instruction = Instruction,
 	BlockType = BlockType,
 	BlockKind = BlockKind,
@@ -287,4 +299,5 @@ return {
 	FunctionKind = FunctionKind,
 	Global = Global,
 	WasmValue = WasmValue,
+	DataSegment = DataSegment,
 }
