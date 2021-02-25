@@ -8,9 +8,10 @@ local record WasmInstance
 	program: parser.Program
 	globals: {runtime.GlobalValue}
 	memory: runtime.LinearMemory
+	imports: {number: runtime.ImportedFunction}
 end
 
-function WasmInstance.load(p: parser.Program, function_imports: {string:{string:function(runtime.VmState)}}): WasmInstance
+function WasmInstance.load(p: parser.Program, function_imports: {string:{string:function(runtime.VmState, {types.WasmValue})}}): WasmInstance
 	local self = setmetatable({} as WasmInstance, { __index = WasmInstance})
 
 	self.program = p
@@ -31,6 +32,24 @@ function WasmInstance.load(p: parser.Program, function_imports: {string:{string:
 			self.memory.bytes[offset_value + i] = v
 		end
 	end
+	
+	self.imports = {}
+	for i,import_name in pairs(p:imported_functions()) do
+		local mod = function_imports[import_name[1]]
+		if mod == nil then
+			error("Missing mod " .. import_name[1] .. " in imports")
+		end
+		local fn = mod[import_name[2]]
+		if fn == nil then
+			error("Missing fn " .. import_name[1] .. "." .. import_name[2] .. " in imports")
+		end
+
+		self.imports[i] = {
+			body = fn,
+			name = import_name[1] .. "." .. import_name[2], 
+			signature = p:signature(i),
+		}
+	end
 
 	return self
 end
@@ -46,7 +65,8 @@ function WasmInstance:executeInit(fn: number)
 		function(fn: number): types.Code return self.program:func_body(fn) end,
 		self.globals,
 		function(fn: number): types.FuncType return self.program:signature(fn) end,
-		self.memory
+		self.memory,
+		self.imports
 	)
 	vm:call(fn, {}, 0)
 	vm.stacktrace = true
@@ -56,5 +76,7 @@ end
 return {
 	iterator = utils.iterator,
 	Program = parser.Program, 
-	WasmInstance = WasmInstance
+	VmState = runtime.VmState,
+	WasmInstance = WasmInstance,
+	WasmValue = types.WasmValue,
 }

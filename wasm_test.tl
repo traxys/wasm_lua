@@ -10,12 +10,23 @@ until not str
 file:close()
 
 local wasm = require("wasm.wasm")
+local VmState = wasm.VmState
+local WasmValue = wasm.WasmValue
+
+local imports = 
+{
+	["env"] = {
+		["putchar"] = function(v: VmState, args: {WasmValue})
+			io.write(string.char(args[1].value))
+		end
+	}
+}
 
 local function main()
 	local bytes = wasm.iterator(input)
 	local program = wasm.Program.parse(bytes)
 	program:print()
-	local instance = wasm.WasmInstance.load(program)
+	local instance = wasm.WasmInstance.load(program, imports)
 	instance:executeInit(2)
 end
 

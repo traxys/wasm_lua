@@ -191,6 +191,7 @@ local record Instruction
 	kind: InstructionKind
 	desc: string
 	action: InstructionErasedAction
+	constant: boolean
 
 	parse: function(BytesIterator): Instruction
 end

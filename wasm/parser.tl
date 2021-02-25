@@ -241,7 +241,7 @@ local function memInstr(self: types.Instruction, bytes: BytesIterator, opcode: n
 
 		self.kind = "load"
 		self.desc = ty .. ".load" .. (signed and "_s" or "_u") .. "_" .. bandwith
-		self.action = runtime.castErased(loadInstrAction(signed, ty, bandwith, types.MemArg.parse(bytes)))
+		self.action = runtime.castErased(runtime.loadInstrAction(signed, ty, bandwith, types.MemArg.parse(bytes)))
 	elseif opcode >= 0x36 and opcode <= 0x3E then
 		local ty: types.ValType
 		if opcode == 0x36 or opcode == 0x3A or opcode == 0x3B then
@@ -266,8 +266,8 @@ local function memInstr(self: types.Instruction, bytes: BytesIterator, opcode: n
 		end
 
 		self.kind = "store"
-		self.desc = ty .. ".load_" .. bandwith
-		self.action = runtime.castErased(storeInstrAction(ty, bandwith, types.MemArg.parse(bytes)))
+		self.desc = ty .. ".store_" .. bandwith
+		self.action = runtime.castErased(runtime.storeInstrAction(ty, bandwith, types.MemArg.parse(bytes)))
 	elseif opcode == 0x3F then
 		assert(bytes() == 0x00, "memory.size requires a following 0 byte")
 		self.kind = "memory.size"
@@ -334,6 +334,7 @@ local function varInstr(self: types.Instruction, bytes: BytesIterator, opcode: n
 		self.action = runtime.castErased(function(v: runtime.VmState) varInstruction(false, "tee", index, v) end)
 	elseif opcode == 0x23 then
 		self.kind = "global.get"
+		self.constant = true
 		self.action = runtime.castErased(function(v: runtime.VmState) varInstruction(true, "get", index, v) end)
 	elseif opcode == 0x24 then
 		self.kind = "global.set"
@@ -566,6 +567,7 @@ end
 
 function types.Instruction.parse(bytes: BytesIterator): types.Instruction
 	local self = setmetatable({} as types.Instruction, { __index = types.Instruction, __tostring = function(s: types.Instruction): string return s:tostring() end})
+	self.constant = false
 
 	local opcode = bytes()
 	if opcode == 0x05 then
@@ -629,9 +631,11 @@ function types.Instruction.parse(bytes: BytesIterator): types.Instruction
 		self.kind = "const"
 		local val = readS(bytes, 32)
 		self.desc = "i32.const=" .. val
+		self.constant = true
 		self.action = runtime.constInstr(val, "i32")
 	elseif opcode == 0x42 then
 		self.kind = "const"
+		self.constant = true
 		local val = readS(bytes, 64)
 		self.desc = "i64.const=" .. val
 		self.action = runtime.constInstr(val, "i64")
@@ -794,8 +798,12 @@ function Program:is_init_fn(fn: number): boolean
 	return #sig.inputs == 0 and #sig.outputs == 0
 end
 
-function Program:imported_functions(): {{string, string}}
-	return utils.mapArray(self.func_import, function(tuple: {number, string, string}): {string, string} return {tuple[2], tuple[3]} end)
+function Program:imported_functions(): {number: {string, string}}
+	local names = {}
+	for	i,v in pairs(self.func_import) do
+		names[i] = {v[2], v[3]}
+	end
+	return names
 end
 
 function Program.parse(bytes: BytesIterator): Program

@@ -99,7 +99,7 @@ end
 local record ImportedFunction
 	signature: types.FuncType
 	name: string
-	body: function(VmState)
+	body: function(VmState, {WasmValue})
 end
 
 function LinearMemory:assert_index(ea: number, bandwith: number, vm: VmState)
@@ -258,7 +258,18 @@ function VmState:call(fn: number, args: {WasmValue}, arity: number)
 		end
 		self.frames:push(Frame.create(args, body.expr, arity, fn))
 	else 
-		self:trap("imported functions are not available")
+		local import = self.imports[fn] as ImportedFunction
+
+		if not xpcall(import.body, function(err: any) 
+			print("----------------")
+			print("Host error: " .. tostring(err))
+		end, self, args) then
+			if not self.trapped then
+				self:trap("Host function " .. import.name .. " errrored")
+			else
+				error("Host function failed")
+			end
+		end
 	end
 end
 
@@ -315,11 +326,14 @@ function VmState:step(): boolean
 	end
 
 	local instr = label.code[label.current]
+	if self.cst and not instr.constant then
+		self:trap("Tried to execute a non constant instruction in a constant context: " .. instr:tostring())
+	end
 
 	print(instr:tostring())
-	--self:print_stack()
-
 	instr.action(self)
+	self:print_stack()
+
 	label.current = label.current + 1
 
 	return true
@@ -350,6 +364,10 @@ function VmState:doCall(indirect: boolean, fn: number)
 end
 
 function VmState:pop_type(type: types.ValType): number
+	if self.stack:empty() then
+		self:trap("Tried to pop from an empty stack")
+	end
+
 	local v = self.stack:pop()
 
 	if v.type ~= type then
@@ -490,8 +508,11 @@ return {
 	constInstr = constInstr,
 	wrapBinOp = wrapBinOp,
 	signBinOp = signBinOp,
+	loadInstrAction = loadInstrAction,
+	storeInstrAction = storeInstrAction,
 	VmState = VmState,
 	LinearMemory = LinearMemory,
 	GlobalValue = GlobalValue,
 	Frame = Frame,
+	ImportedFunction = ImportedFunction,
 }
