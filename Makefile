@@ -5,4 +5,7 @@ LUAFILES:=$(patsubst %.tl, $(LUA)/%.lua, $(shell find $(SRC) -name '*.tl' -type 
 module: $(LUAFILES)
 
 $(LUA)/%.lua: $(SRC)/%.tl
-	tl gen -o $@ $<
+	tl gen -o $@ $< > /dev/null
+
+clean:
+	rm $(LUAFILES)
