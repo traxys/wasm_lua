@@ -1,6 +1,8 @@
 # wasm_lua
 
-This is made with `teal`, you can use the provided `.lua` file, or compile the `.tl` file according to the instructions for [teal](https://github.com/teal-language/tl#running)
+To make the `.lua` files you can do `make`.
+
+To use either the `teal` module or the `lua` module you can do `require("wasm.wasm")`. An example use is provided in `wasm_test.tl`
 
 
 ## Why would you do that ?
